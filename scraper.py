@@ -1027,60 +1027,51 @@ def _filter_by_keywords(df, palabras_clave: str):
     dfc.drop(columns=["texto_completo"], errors="ignore", inplace=True)
     return dfc
 
-def run_scrapers(zona: str = "", dormitorios: str = "0", banos: str = "0",
-                        price_min: Optional[int] = None, price_max: Optional[int] = None,
-                        palabras_clave: str = ""):
+def run_scrapers(zona="", dormitorios="0", banos="0", price_min=None, price_max=None, palabras_clave=""):
     """
-    Ejecuta todos los scrapers y devuelve los resultados combinados
+    Ejecuta todos los scrapers y devuelve los resultados combinados.
+    Si no se especifica una zona, se usará "Lima" por defecto.
     """
+    # Si no se especifica una zona, usar "Lima" por defecto
+    if not zona or not zona.strip():
+        zona = "Lima"
+
     frames = []
     counts = {}
     logger.info(f"🔎 Buscando en {zona} | dorms={dormitorios} | baños={banos} | precio={price_min}-{price_max} | palabras_clave='{palabras_clave}'")
     for name, func in SCRAPERS:
         try:
-            df = func(zona=zona, dormitorios=dormitorios, banos=banos, price_min=price_min, price_max=price_max, palabras_clave=palabras_clave)
-        except TypeError:
-            # backward compatibility: call with fewer args
-            try:
-                df = func(zona, dormitorios, banos, price_min, price_max)
-            except Exception as e:
-                logger.error(f" ❌ Error ejecutando {name} (fallback): {e}")
-                df = pd.DataFrame()
+            df = func(zona, dormitorios, banos, price_min, price_max)
         except Exception as e:
-            logger.error(f" ❌ Error ejecutando {name}: {e}")
+            logger.error(f"❌ Error en {name}: {e}")
             df = pd.DataFrame()
-        if df is None or not isinstance(df, pd.DataFrame):
-            df = pd.DataFrame(columns=["titulo","precio","m2","dormitorios","baños","descripcion","link","imagen_url","fuente","scraped_at","id"])
-        # ensure columns present
-        required_columns = ["titulo","precio","m2","dormitorios","baños","descripcion","link","imagen_url","fuente","scraped_at","id"]
+        if df is None:
+            df = pd.DataFrame()
+        # Asegurar que todas las columnas requeridas existan
+        required_columns = ["titulo","precio","m2","dormitorios","baños","descripcion","link","fuente","imagen_url"]
         for col in required_columns:
             if col not in df.columns:
                 df[col] = ""
         total_raw = len(df)
         counts[name] = total_raw
         logger.info(f"Fuente: {name} -> encontrados: {total_raw}")
-        # normalize
         df = df.fillna("").astype(object)
         for col in required_columns:
             df[col] = df[col].astype(str).str.strip().replace({None: "", "None": ""})
-        # strict filters (price/dorm/banos)
+        # Aplicar filtro estricto
         df_filtered = _filter_df_strict(df, dormitorios, banos, price_min, price_max)
-        logger.info(f"Fuente: {name} -> después filtrado estricto: {len(df_filtered)}")
-        # keywords: apply post-scrape ONLY for sources that didn't use keyword in URL
-        # EXCLUDE properati because it uses 'amenities' and text may not contain the keyword
-        if palabras_clave and palabras_clave.strip() and name not in ("urbania", "doomos", "properati"):
-            prev = len(df_filtered)
+        # Aplicar filtro por palabras clave
+        if palabras_clave.strip():
             df_filtered = _filter_by_keywords(df_filtered, palabras_clave)
-            logger.info(f"Fuente: {name} -> después filtrar por keywords: {len(df_filtered)} (eliminados {prev - len(df_filtered)})")
         if len(df_filtered) > 0:
+            df_filtered = df_filtered.copy()
+            df_filtered["scraped_at"] = datetime.now().isoformat()
+            df_filtered["id"] = [str(uuid.uuid4()) for _ in range(len(df_filtered))]
             frames.append(df_filtered)
     if not frames:
-        logger.warning("⚠️ Ninguna fuente devolvió anuncios tras filtrar.")
+        logger.warning("⚠️ Ninguna fuente devolvió anuncios")
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True, sort=False)
-    # Eliminar filas donde el link empieza con "#" o está vacío
-    combined = combined[~combined["link"].str.startswith("#")].reset_index(drop=True)
-    combined = combined[combined["link"] != ""].reset_index(drop=True)
     combined = combined.drop_duplicates(subset=["link","titulo"], keep="first").reset_index(drop=True)
     return combined
 
